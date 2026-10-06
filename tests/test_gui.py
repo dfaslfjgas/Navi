@@ -14,12 +14,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QByteArray, QEventLoop, QPoint, QRect, QSize, QTimer, Qt
 from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QSystemTrayIcon
 
 from common.config import AppConfig
 from gui.hotkey import GlobalHotkey, HOTKEY_ID, MOD_NOREPEAT, WM_HOTKEY
 from gui.icons import APP_ICON_PATH, ASSET_DIR, app_icon, asset_icon
-from gui.api import NaviApi, parse_chat_list, parse_messages
+from gui.api import (
+    NaviApi,
+    parse_chat_list,
+    parse_messages,
+    parse_setting_detail,
+    parse_settings,
+)
 from gui.main import GuiController
 from gui.tray import NaviTray
 from gui.window import NaviPanel, logical_size_for_screen, popup_position_near_cursor
@@ -33,11 +39,32 @@ class PanelTests(unittest.TestCase):
     def setUp(self):
         self.panel = NaviPanel(AppConfig())
         self.api = NaviApi("http://127.0.0.1:8765/api/v1", self.panel)
-        for method in (
-            "get_chats", "get_messages", "create_chat", "rename_chat",
-            "delete_chat", "send_message",
+        for owner, methods in (
+            (
+                self.api.chat_items,
+                (
+                    "get_chat_items",
+                    "create_chat_item",
+                    "rename_chat_item",
+                    "delete_chat_item",
+                ),
+            ),
+            (self.api.chat_content, ("get_chat_content",)),
+            (self.api.agent, ("send_message",)),
+            (
+                self.api.settings,
+                (
+                    "get_settings",
+                    "get_setting",
+                    "create_setting",
+                    "update_setting",
+                    "delete_setting",
+                    "test_setting",
+                ),
+            ),
         ):
-            setattr(self.api, method, Mock())
+            for method in methods:
+                setattr(owner, method, Mock())
         self.panel.attach_api(self.api)
 
     def tearDown(self):
@@ -121,38 +148,40 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(button.toolTip(), "隐藏对话")
         self.assertEqual(self.panel.width(), 420)
         self.assertLess(self.panel.history.x(), self.panel.x())
-        self.api.get_chats.assert_called_once_with()
+        self.api.chat_items.get_chat_items.assert_called_once_with()
         records = [
             {"id": "c1", "name": "第一段对话", "activity_time": "2026-10-06T02:00:02.000001Z"},
             {"id": "c2", "name": "第二段对话", "activity_time": "2026-10-06T02:00:01.000001Z"},
         ]
-        self.api.chats_loaded.emit(records, True, False)
+        self.api.chat_items.chats_loaded.emit(records, True, False)
         self.assertEqual(self.panel.history.list.count(), 2)
         first = self.panel.history.list.itemWidget(self.panel.history.list.item(0))
         first.selected.emit("c1")
-        self.api.get_messages.assert_called_once_with("c1")
+        self.api.chat_content.get_chat_content.assert_called_once_with("c1")
         messages = [{
             "id": "m1", "role": "user", "content": "第一条消息",
             "status": "completed", "created_time": "2026-10-06T02:00:00.000001Z",
         }]
-        self.api.messages_loaded.emit("c1", messages, True, False)
+        self.api.chat_content.messages_loaded.emit("c1", messages, True, False)
         self.assertEqual(self.panel.chat.messages[0].label.text(), "第一条消息")
         self.panel.load_more_content()
-        self.api.get_messages.assert_called_with("c1", "2026-10-06T02:00:00.000001Z")
+        self.api.chat_content.get_chat_content.assert_called_with(
+            "c1", "2026-10-06T02:00:00.000001Z"
+        )
         second = self.panel.history.list.itemWidget(self.panel.history.list.item(1))
         second.selected.emit("c2")
-        self.api.get_messages.assert_called_with("c2")
+        self.api.chat_content.get_chat_content.assert_called_with("c2")
         self.assertEqual(self.panel.chat.messages, [])
         self.panel.history.refresh_button.click()
-        self.assertEqual(self.api.get_chats.call_count, 2)
+        self.assertEqual(self.api.chat_items.get_chat_items.call_count, 2)
         self.panel.history.new_button.click()
-        self.api.create_chat.assert_called_once()
+        self.api.chat_items.create_chat_item.assert_called_once()
         button.click()
         self.assertFalse(self.panel.history.isVisible())
         self.assertEqual(button.toolTip(), "展示对话")
 
     def test_history_context_menu_renames_and_deletes_after_http_success(self):
-        self.api.chats_loaded.emit(
+        self.api.chat_items.chats_loaded.emit(
             [{"id": "c1", "name": "旧名称", "activity_time": "2026-10-06T02:00:00.000001Z"}],
             False, False,
         )
@@ -160,19 +189,21 @@ class PanelTests(unittest.TestCase):
         self.assertFalse(row.more.icon().pixmap(18, 18).isNull())
         with patch("gui.window.QInputDialog.getText", return_value=("新名称", True)):
             row.menu.actions()[0].trigger()
-        self.api.rename_chat.assert_called_once_with("c1", "新名称")
-        self.api.chat_renamed.emit({"id": "c1", "name": "新名称"})
+        self.api.chat_items.rename_chat_item.assert_called_once_with("c1", "新名称")
+        self.api.chat_items.chat_renamed.emit({"id": "c1", "name": "新名称"})
         row = self.panel.history.list.itemWidget(self.panel.history.list.item(0))
         self.assertEqual(row.title.text(), "新名称")
         with patch("gui.window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             row.menu.actions()[1].trigger()
-        self.api.delete_chat.assert_called_once_with("c1")
-        self.api.chat_deleted.emit("c1")
+        self.api.chat_items.delete_chat_item.assert_called_once_with("c1")
+        self.api.chat_items.chat_deleted.emit("c1")
         self.assertEqual(self.panel.history.list.count(), 0)
 
     def test_refresh_and_more_icons_load(self):
         self.assertFalse(asset_icon("refresh.svg").pixmap(24, 24).isNull())
         self.assertFalse(asset_icon("more-horizontal.svg").pixmap(24, 24).isNull())
+        self.assertFalse(asset_icon("display.svg").pixmap(24, 24).isNull())
+        self.assertFalse(asset_icon("hide.svg").pixmap(24, 24).isNull())
 
     def test_toolbar_uses_downloaded_icons(self):
         self.assertTrue((ASSET_DIR / "pin.svg").is_file())
@@ -181,20 +212,85 @@ class PanelTests(unittest.TestCase):
         self.assertFalse(asset_icon("settings.svg").pixmap(24, 24).isNull())
         self.assertEqual(self.panel.title_bar.settings_button.toolTip(), "设置")
 
+    def test_settings_button_opens_configuration_manager(self):
+        self.panel.title_bar.settings_button.click()
+        dialog = self.panel.settings_dialog
+        self.assertIsNotNone(dialog)
+        self.api.settings.get_settings.assert_called_once_with()
+
+        self.api.settings.settings_loaded.emit([
+            {"setting_id": "s1", "name": "当前配置", "active": True},
+            {"setting_id": "s2", "name": "备用配置", "active": False},
+        ])
+        first_row = dialog.rows.itemAt(0).widget()
+        second_row = dialog.rows.itemAt(1).widget()
+        self.assertEqual(first_row.name_label.text(), "当前配置")
+        self.assertTrue(first_row.active_check.isChecked())
+
+        first_row.active_check.click()
+        self.api.settings.update_setting.assert_called_once_with("s1", active=False)
+        self.api.settings.setting_updated.emit({"setting_id": "s1", "active": False})
+        self.api.settings.settings_loaded.emit([
+            {"setting_id": "s1", "name": "当前配置", "active": False},
+            {"setting_id": "s2", "name": "备用配置", "active": False},
+        ])
+        first_row = dialog.rows.itemAt(0).widget()
+        second_row = dialog.rows.itemAt(1).widget()
+        self.assertFalse(dialog.test_button.isEnabled())
+
+        second_row.active_check.click()
+        self.api.settings.update_setting.assert_called_with("s2", active=True)
+
+        first_row.edit_button.click()
+        self.api.settings.get_setting.assert_called_once_with("s1")
+        self.api.settings.setting_loaded.emit({
+            "setting_id": "s1",
+            "name": "当前配置",
+            "model_provider": "openai",
+            "model_name": "model-a",
+            "api_key": "key-a",
+            "base_url": "https://example.com/v1",
+            "active": True,
+            "created_at": "",
+            "updated_at": "",
+        })
+        editor = dialog._editor
+        self.assertIsNone(editor.active_check)
+        self.assertEqual(
+            [editor.provider_combo.itemData(index) for index in range(3)],
+            ["openai", "anthropic", "google_genai"],
+        )
+        self.assertEqual(
+            editor.provider_combo.itemText(0),
+            "OpenAI（国内模型可选择）",
+        )
+        self.assertEqual(editor.key_edit.text(), "key-a")
+        self.assertEqual(editor.key_edit.echoMode(), QLineEdit.EchoMode.Password)
+        self.assertEqual(editor.key_visibility_action.toolTip(), "显示 API Key")
+        self.assertFalse(editor.key_visibility_action.icon().isNull())
+        editor.key_visibility_action.trigger()
+        self.assertEqual(editor.key_edit.echoMode(), QLineEdit.EchoMode.Normal)
+        self.assertEqual(editor.key_visibility_action.toolTip(), "隐藏 API Key")
+        self.assertFalse(editor.key_visibility_action.icon().isNull())
+        self.assertEqual(editor.key_edit.text(), "key-a")
+        editor.key_visibility_action.trigger()
+        self.assertEqual(editor.key_edit.echoMode(), QLineEdit.EchoMode.Password)
+        self.assertEqual(editor.key_visibility_action.toolTip(), "显示 API Key")
+
     def test_send_button_adds_user_message_and_emits(self):
         submitted = []
         self.panel.message_submitted.connect(submitted.append)
-        self.api.chat_created.emit({
+        self.api.chat_items.chat_created.emit({
             "id": "c1", "name": "新对话", "activity_time": "2026-10-06T02:00:00.000001Z"
         })
         self.panel.chat.input.setPlainText("  你好，Navi  ")
         self.assertTrue(self.panel.chat.send_button.isEnabled())
         self.panel.chat.send_button.click()
         self.assertEqual(submitted, ["你好，Navi"])
-        self.api.send_message.assert_called_once_with("c1", "你好，Navi")
+        self.api.agent.send_message.assert_called_once_with("c1", "你好，Navi")
         self.assertEqual(len(self.panel.chat.messages), 0)
         self.assertFalse(self.panel.chat.send_button.isEnabled())
-        self.api.message_accepted.emit("c1", "r1", {
+        self.api.agent.message_accepted.emit("c1", "r1", {
             "id": "m1", "role": "user", "content": "你好，Navi",
             "status": "completed", "created_time": "2026-10-06T02:00:01.000001Z",
         })
@@ -204,9 +300,9 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.panel.chat.input.toPlainText(), "")
         self.assertFalse(self.panel.chat.welcome.isVisible())
         self.assertFalse(self.panel.chat.send_button.isEnabled())
-        self.api.stream_started.emit("r1", "m2")
-        self.api.stream_delta.emit("r1", "m2", "你好")
-        self.api.stream_completed.emit("r1", {
+        self.api.agent.stream_started.emit("r1", "m2")
+        self.api.agent.stream_delta.emit("r1", "m2", "你好")
+        self.api.agent.stream_completed.emit("r1", {
             "id": "m2", "role": "assistant", "content": "你好！",
             "status": "completed", "created_time": "2026-10-06T02:00:02.000001Z",
         })
@@ -272,10 +368,10 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(bar.value(), bar.maximum())
         self.assertEqual(self.panel.chat.messages[0].message_id, "m0")
         self.assertEqual(self.panel.chat.messages[-1].message_id, "m29")
-        self.api.get_messages.reset_mock()
+        self.api.chat_content.get_chat_content.reset_mock()
         bar.setValue(0)
         APP.processEvents()
-        self.api.get_messages.assert_called_once_with(
+        self.api.chat_content.get_chat_content.assert_called_once_with(
             "c1", "2026-10-06T02:00:00.000001Z"
         )
 
@@ -384,30 +480,155 @@ class NaviApiTests(unittest.TestCase):
         self.assertEqual(messages[0]["id"], "m1")
         self.assertEqual(messages[0]["content"], "你好")
         self.assertFalse(has_more)
+        settings = parse_settings({
+            "result": True,
+            "data": [{
+                "setting_id": "setting_1",
+                "name": "本地模型",
+                "active": True,
+            }],
+            "error": None,
+        })
+        self.assertEqual(settings[0]["setting_id"], "setting_1")
+        self.assertEqual(settings[0], {
+            "setting_id": "setting_1",
+            "name": "本地模型",
+            "active": True,
+        })
+        detail = parse_setting_detail({
+            "result": True,
+            "data": {
+                "setting_id": "setting_1",
+                "name": "本地模型",
+                "model_provider": "openai",
+                "model_name": "model-a",
+                "api_key": "key-a",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "active": True,
+            },
+            "error": None,
+        })
+        self.assertEqual(detail["model_name"], "model-a")
+        self.assertEqual(detail["model_provider"], "openai")
+        self.assertTrue(detail["active"])
 
     def test_request_paths_and_methods(self):
         api = NaviApi("http://127.0.0.1:8765/api/v1")
-        with patch.object(api, "_request") as request:
-            api.get_chats()
+        with patch.object(api.transport, "request") as request:
+            api.chat_items.get_chat_items()
             self.assertEqual(request.call_args.args[:3], ("chats", "GET", "/chats?page_size=30"))
-            api.get_chats("2026-10-06T02:00:00.000001Z", 25)
+            api.chat_items.get_chat_items("2026-10-06T02:00:00.000001Z", 25)
             self.assertEqual(
                 request.call_args.args[:3],
                 ("chats", "GET", "/chats?page_size=25&activity_time_lt=2026-10-06T02%3A00%3A00.000001Z"),
             )
-            api.get_messages("chat/a", "2026-10-06T01:00:00.000001Z", 20)
+            api.chat_content.get_chat_content(
+                "chat/a",
+                "2026-10-06T01:00:00.000001Z",
+                20,
+            )
             self.assertEqual(request.call_args.args[:3], (
                 "messages", "GET",
-                "/chats/chat%2Fa/messages?page_size=20&created_time_lt=2026-10-06T01%3A00%3A00.000001Z",
+                "/chat_content/chat%2Fa/messages?page_size=20&created_time_lt=2026-10-06T01%3A00%3A00.000001Z",
             ))
-            api.create_chat()
+            api.chat_items.create_chat_item()
             self.assertEqual(request.call_args.args[:3], ("create_chat", "POST", "/chats"))
-            api.rename_chat("chat/a", "新标题")
+            api.chat_items.rename_chat_item("chat/a", "新标题")
             self.assertEqual(request.call_args.args[:4],
                              ("rename_chat", "PATCH", "/chats/chat%2Fa", {"name": "新标题"}))
-            api.delete_chat("chat/a")
+            api.chat_items.delete_chat_item("chat/a")
             self.assertEqual(request.call_args.args[:3],
                              ("delete_chat", "DELETE", "/chats/chat%2Fa"))
+            api.chat_content.add_chat_content("chat/a", "user", "你好")
+            self.assertEqual(
+                request.call_args.args[:4],
+                (
+                    "add_chat_content",
+                    "POST",
+                    "/chat_content/chat%2Fa/messages",
+                    {"role": "user", "content": "你好"},
+                ),
+            )
+            api.agent.send_message("chat/a", "请回复", "client-1")
+            self.assertEqual(
+                request.call_args.args[:4],
+                (
+                    "send_message",
+                    "POST",
+                    "/chats/chat%2Fa/messages",
+                    {
+                        "content": "请回复",
+                        "client_message_id": "client-1",
+                    },
+                ),
+            )
+            api.settings.get_settings()
+            self.assertEqual(
+                request.call_args.args[:3],
+                ("get_settings", "GET", "/setting/get_setting"),
+            )
+            api.settings.get_setting("setting/a")
+            self.assertEqual(
+                request.call_args.args[:3],
+                (
+                    "get_setting",
+                    "GET",
+                    "/setting/get_setting/setting_id/setting%2Fa",
+                ),
+            )
+            api.settings.test_setting()
+            self.assertEqual(
+                request.call_args.args[:3],
+                (
+                    "test_setting",
+                    "POST",
+                    "/setting/test_setting",
+                ),
+            )
+            self.assertEqual(request.call_args.kwargs["timeout_ms"], 25000)
+            api.settings.create_setting(
+                "OpenAI",
+                "openai",
+                "model-a",
+                "key-a",
+                "https://example.com/v1",
+                True,
+            )
+            self.assertEqual(
+                request.call_args.args[:4],
+                (
+                    "create_setting",
+                    "POST",
+                    "/setting/create_setting",
+                    {
+                        "name": "OpenAI",
+                        "model_provider": "openai",
+                        "model_name": "model-a",
+                        "api_key": "key-a",
+                        "base_url": "https://example.com/v1",
+                        "active": True,
+                    },
+                ),
+            )
+            api.settings.update_setting("setting/a", active=True)
+            self.assertEqual(
+                request.call_args.args[:4],
+                (
+                    "update_setting",
+                    "PATCH",
+                    "/setting/update_setting/setting_id/setting%2Fa",
+                    {"active": True},
+                ),
+            )
+            api.settings.delete_setting("setting/a")
+            self.assertEqual(
+                request.call_args.args[:3],
+                (
+                    "delete_setting",
+                    "DELETE",
+                    "/setting/delete_setting/setting_id/setting%2Fa",
+                ),
+            )
 
     def test_async_http_list_round_trip(self):
         paths = []
@@ -436,9 +657,13 @@ class NaviApiTests(unittest.TestCase):
             timeout = QTimer()
             timeout.setSingleShot(True)
             timeout.timeout.connect(loop.quit)
-            api.chats_loaded.connect(lambda items, _more, _append: (result.extend(items), loop.quit()))
-            api.request_failed.connect(lambda op, detail: (result.append((op, detail)), loop.quit()))
-            api.get_chats()
+            api.chat_items.chats_loaded.connect(
+                lambda items, _more, _append: (result.extend(items), loop.quit())
+            )
+            api.transport.request_failed.connect(
+                lambda op, detail: (result.append((op, detail)), loop.quit())
+            )
+            api.chat_items.get_chat_items()
             timeout.start(3000)
             loop.exec()
             timeout.stop()

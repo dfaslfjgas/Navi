@@ -6,15 +6,7 @@ GUI 使用 PySide6 Essentials，临时服务使用 FastAPI 与 Uvicorn；具体�
 
 ## 启动
 
-激活已经创建的 Conda 环境。在第一个终端启动临时 HTTP 服务：
-
-```powershell
-conda activate Navi
-cd D:\Navi
-python mock_server.py
-```
-
-在第二个终端启动 GUI：
+激活已经创建的 Conda 环境，然后启动 Navi：
 
 ```powershell
 conda activate Navi
@@ -24,7 +16,7 @@ python app.py
 
 也可以在 PyCharm 中选择名为 `Navi` 的解释器，直接运行根目录的 `app.py`。
 `requirements.txt` 仅记录项目依赖，不创建或管理虚拟环境。
-临时服务预置两条示例对话，数据只在服务进程内存中，关闭服务后新建、重命名和删除的结果会重置。
+`app.py` 会先启动 FastAPI 子进程，再启动 Qt。通过托盘退出 Qt 时，FastAPI 会同步退出并被父进程回收。
 
 ## 操作
 
@@ -47,8 +39,12 @@ python app.py
 ## 进程边界
 
 ```text
-app.py               本阶段仅启动 GUI；未来管理 Agent 子进程生命周期
-mock_server.py       FastAPI 临时 HTTP/SSE 服务，示例数据只保存在内存
+app.py               启动 Qt，并管理 FastAPI 子进程的完整生命周期
+server/main.py       正式 FastAPI 应用入口及 Controller 路由挂载
+server/controller/   对话列表、聊天内容与 Agent 回复接口
+server/service/      业务逻辑层预留目录
+server/dao/          SQLite 数据访问层预留目录
+mock_server.py       GUI 联调使用的独立内存 Mock 服务
 gui/main.py          QApplication 与 GUI 对象生命周期
 gui/window.py        主面板、自定义标题栏、拖动、Pin、隐藏
 gui/chat.py          消息列表、消息气泡、输入框与发送信号
@@ -57,14 +53,34 @@ gui/tray.py          托盘图标与退出菜单
 gui/hotkey.py        Windows RegisterHotKey + Qt 原生消息过滤
 gui/icons.py         加载项目 SVG，绘制发送和关闭等内置小图标
 assets/              全部英文命名的应用、Pin、设置、刷新和更多操作 SVG
-gui/api.py           Qt 异步 HTTP、响应解析和 SSE 流处理
+gui/api/             按后端 Controller 领域划分的 GUI HTTP/SSE 客户端
+gui/api/client.py    组合各领域 API，作为窗口持有的统一入口
+gui/api/chat_item.py 对话列表的查询、创建、重命名和删除
+gui/api/chat_content.py  聊天内容的分页读取和直接新增
+gui/api/agent.py     Agent 消息提交及 SSE 流式回复
+gui/api/setting.py   模型配置的创建、查询、修改和删除
+gui/api/transport.py 共用的 Qt HTTP 传输、错误处理和响应解析
 common/config.py     GUI 设置及预留 Agent 地址 127.0.0.1:8765
 agent/               独立 Agent 进程预留目录，当前没有服务实现
 tests/               GUI 状态、托盘路由、原生快捷键消息及退出清理检查
 ```
 
 GUI 不导入 LangChain、FastAPI 或 Agent 运行时。GUI 本身不监听端口；
-临时 FastAPI 服务是独立进程，只监听 `127.0.0.1:8765`，GUI 通过 Qt 异步 HTTP 请求访问它。
+FastAPI 由 `app.py` 作为独立子进程启动，只监听 `127.0.0.1:8765`，GUI 通过 Qt 异步 HTTP 请求访问它。
+
+## 服务端日志
+
+FastAPI 使用 Loguru 统一记录启动状态、每次 HTTP 请求的状态码和耗时，以及接口
+校验失败的具体原因。日志文件位于：
+
+```text
+%LOCALAPPDATA%\Navi\logs\navi-server.log
+```
+
+单个日志达到 10 MB 后自动轮换，旧日志保留 14 天并压缩为 ZIP。请求体不会写入
+日志，避免模型配置中的 API Key 被记录。若 Loguru 尚未安装，程序仍可使用 Python
+标准日志模块启动，并按 10 MB 轮换；按 `requirements.txt` 配好环境后会自动使用
+Loguru。
 
 ## HTTP 接口
 

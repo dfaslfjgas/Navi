@@ -208,7 +208,7 @@ HTTP 状态码：`201 Created`
 URL
 
 ```http
-GET /api/v1/chats/{chat_id}/messages
+GET /api/v1/chat_content/{chat_id}/messages
 ```
 
 参数
@@ -224,7 +224,7 @@ Query 参数：
 | 参数 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | `created_time_lt` | 否 | string | 只返回创建时间早于该值的消息；首次请求不传 |
-| `page_size` | 否 | integer | 每页数量，默认 `30` |
+| `page_size` | 否 | integer | 每页数量，默认并最多为 `30` |
 
 首次请求返回最近的消息。继续加载时，GUI 取当前消息列表第一项的 `created_time` 作为下一次请求的 `created_time_lt`。每一页的 `items` 始终按照 `created_time ASC` 排列，并插入现有消息列表顶部。
 
@@ -270,6 +270,57 @@ system
 generating
 completed
 failed
+```
+
+## 5.1、增加聊天消息
+
+URL
+
+```http
+POST /api/v1/chat_content/{chat_id}/messages
+Content-Type: application/json
+```
+
+参数
+
+Path 参数：
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `chat_id` | 是 | string | 消息所属的对话 ID |
+
+Body 参数：
+
+```json
+{
+  "role": "user",
+  "content": "你好，Navi"
+}
+```
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `role` | 是 | string | `user`、`assistant` 或 `system` |
+| `content` | 是 | string | 消息正文，不能为空 |
+
+增加消息后，同时更新所属对话的 `activity_time`。
+
+返回值
+
+HTTP 状态码：`201 Created`
+
+```json
+{
+  "result": true,
+  "data": {
+    "id": "msg_503",
+    "role": "user",
+    "content": "你好，Navi",
+    "status": "completed",
+    "created_time": "2026-10-06T02:50:00.123456Z"
+  },
+  "error": null
+}
 ```
 
 ## 6.1、提交消息
@@ -425,6 +476,195 @@ data: {"code":"MODEL_REQUEST_FAILED","message":"模型请求失败","retryable":
 
 收到 `completed` 或 `error` 后，服务端关闭 SSE 连接。SSE 网络断开本身不会停止 Agent 任务，GUI 应保持发送按钮不可点击并尝试重新连接。
 
+## 9、新增模型配置
+
+URL
+
+```http
+POST /api/v1/setting/create_setting
+Content-Type: application/json
+```
+
+参数
+
+```json
+{
+  "name": "OpenAI 主配置",
+  "model_provider": "openai",
+  "model_name": "gpt-5.4",
+  "api_key": "sk-example",
+  "base_url": "https://api.openai.com/v1",
+  "active": true
+}
+```
+
+`active=true` 时，服务端会在同一事务中取消原来的激活配置。
+`model_provider` 当前只允许 `openai`、`anthropic`、`google_genai`。国内模型
+厂商统一使用其 OpenAI 兼容接口并填写 `openai`；Claude 填写 `anthropic`；
+Gemini 填写 `google_genai`。未知或拼写错误的值返回 HTTP `400 INVALID_REQUEST`。
+
+返回值
+
+```json
+{
+  "result": true,
+  "data": {
+    "setting_id": "setting_abc123",
+    "name": "OpenAI 主配置",
+    "model_provider": "openai",
+    "model_name": "gpt-5.4",
+    "api_key": "sk-example",
+    "base_url": "https://api.openai.com/v1",
+    "active": true,
+    "created_at": "2026-10-06T10:00:00.000000Z",
+    "updated_at": "2026-10-06T10:00:00.000000Z"
+  },
+  "error": null
+}
+```
+
+## 10、获取全部模型配置
+
+URL
+
+```http
+GET /api/v1/setting/get_setting
+```
+
+参数
+
+无。
+
+返回值
+
+```json
+{
+  "result": true,
+  "data": [
+    {
+      "setting_id": "setting_abc123",
+      "name": "OpenAI 主配置",
+      "active": true
+    }
+  ],
+  "error": null
+}
+```
+
+## 11、获取模型配置详情
+
+URL
+
+```http
+GET /api/v1/setting/get_setting/setting_id/{setting_id}
+```
+
+参数
+
+`setting_id` 是要查询的配置 ID。
+
+返回值
+
+```json
+{
+  "result": true,
+  "data": {
+    "setting_id": "setting_abc123",
+    "name": "OpenAI 主配置",
+    "model_provider": "openai",
+    "model_name": "gpt-5.4",
+    "api_key": "sk-example",
+    "base_url": "https://api.openai.com/v1",
+    "active": true,
+    "created_at": "2026-10-06T10:00:00.000000Z",
+    "updated_at": "2026-10-06T10:00:00.000000Z"
+  },
+  "error": null
+}
+```
+
+## 12、测试模型配置
+
+URL
+
+```http
+POST /api/v1/setting/test_setting
+```
+
+参数
+
+无。服务端启动时会从 SQLite 读取 `active=true` 的配置并保存到进程内运行时
+状态；新增、修改、删除或切换激活配置后会立即刷新该状态。本接口直接使用当前
+激活配置中的 `model_provider`、`model_name`、`api_key` 和 `base_url` 发起一次
+最小模型调用。对应 Provider 的 LangChain 集成包必须已经安装；阿里云百炼等
+OpenAI 兼容接口使用 `openai`。没有激活配置时返回 `SETTING_NOT_FOUND`；运行时
+配置缺少任一必要参数时返回 `INVALID_REQUEST`，不会发起模型调用。
+
+返回值
+
+```json
+{
+  "result": true,
+  "data": {
+    "setting_id": "setting_abc123",
+    "success": true,
+    "reply": "OK"
+  },
+  "error": null
+}
+```
+
+## 13、修改模型配置
+
+URL
+
+```http
+PATCH /api/v1/setting/update_setting/setting_id/{setting_id}
+Content-Type: application/json
+```
+
+参数
+
+`setting_id` 是要修改的配置 ID。请求体支持 `name`、`model_provider`、
+`model_name`、`api_key`、`base_url`、`active`，只传需要修改的字段，但至少传一个。
+将当前配置的 `active` 修改为 `false` 会取消激活，并立即清空进程内运行时配置。
+
+```json
+{
+  "model_provider": "openai",
+  "model_name": "gpt-5.4-mini",
+  "active": true
+}
+```
+
+返回值
+
+返回修改后的完整配置，格式与新增接口的 `data` 一致。
+
+## 14、删除模型配置
+
+URL
+
+```http
+DELETE /api/v1/setting/delete_setting/setting_id/{setting_id}
+```
+
+参数
+
+`setting_id` 是要删除的配置 ID。
+
+返回值
+
+```json
+{
+  "result": true,
+  "data": {
+    "setting_id": "setting_abc123"
+  },
+  "error": null
+}
+```
+
 ## 错误返回格式
 
 URL
@@ -458,11 +698,14 @@ URL
 | `INVALID_PAGE_SIZE` | `400` | `page_size` 超出范围 |
 | `CHAT_NOT_FOUND` | `404` | 对话不存在 |
 | `RUN_NOT_FOUND` | `404` | run 不存在 |
+| `SETTING_NOT_FOUND` | `404` | 模型配置不存在 |
+| `DATABASE_ERROR` | `500` | 本地数据库读取或写入失败 |
 | `CHAT_BUSY` | `409` | 对话已有未结束的 run |
 | `IDEMPOTENCY_CONFLICT` | `409` | 相同幂等键对应不同消息内容 |
 | `EVENTS_EXPIRED` | `410` | SSE 事件已超过保留期 |
 | `AGENT_UNAVAILABLE` | `503` | Agent 暂时不可用 |
 | `MODEL_REQUEST_FAILED` | `500` 或 SSE | 模型调用失败 |
+| `MODEL_CONNECTION_FAILED` | `502` | 模型配置测试调用失败 |
 | `INTERNAL_ERROR` | `500` | 未预期的服务端错误 |
 
-本文档 Review 通过后，再同步修改 GUI HTTP 客户端、内存 mock server 和测试。
+GUI HTTP 客户端和自动测试已按本文档同步。

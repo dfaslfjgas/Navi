@@ -2,3 +2,8 @@ PySide6-Essentials==6.8.3
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
 httpx>=0.27,<1
+loguru>=0.7,<1
+langchain>=1.0,<2
+langchain-anthropic
+langchain-google-genai
+langchain-openai>=1.0,<2

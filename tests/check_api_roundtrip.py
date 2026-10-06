@@ -28,7 +28,7 @@ def main() -> int:
             finish_failure("chats", "mock server returned no chats")
             return
         result["chat_id"] = items[0]["id"]
-        api.send_message(items[0]["id"], "Qt SSE 联调")
+        api.agent.send_message(items[0]["id"], "Qt SSE 联调")
 
     def accepted(_chat_id: str, run_id: str, _message: dict) -> None:
         result["run_id"] = run_id
@@ -46,15 +46,17 @@ def main() -> int:
         result["completed"] = message["content"]
         app.quit()
 
-    api.chats_loaded.connect(chats_loaded)
-    api.message_accepted.connect(accepted)
-    api.stream_started.connect(started)
-    api.stream_delta.connect(delta)
-    api.stream_completed.connect(completed)
-    api.stream_failed.connect(lambda _run, code, detail: finish_failure(code, detail))
-    api.request_failed.connect(finish_failure)
+    api.chat_items.chats_loaded.connect(chats_loaded)
+    api.agent.message_accepted.connect(accepted)
+    api.agent.stream_started.connect(started)
+    api.agent.stream_delta.connect(delta)
+    api.agent.stream_completed.connect(completed)
+    api.agent.stream_failed.connect(
+        lambda _run, code, detail: finish_failure(code, detail)
+    )
+    api.transport.request_failed.connect(finish_failure)
     QTimer.singleShot(7000, lambda: finish_failure("timeout", "round trip timed out"))
-    api.get_chats()
+    api.chat_items.get_chat_items()
     app.exec()
     print(json.dumps(result, ensure_ascii=True))
     return 1 if failed["value"] else 0

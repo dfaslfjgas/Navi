@@ -14,6 +14,7 @@ from gui.chat import ChatView
 from gui.api import NaviApi
 from gui.history import HistorySidebar
 from gui.icons import app_icon, asset_icon, make_icon
+from gui.settings import SettingsDialog
 
 
 POPUP_GAP = 12
@@ -172,6 +173,7 @@ class NaviPanel(QWidget):
         self._screen_signal_connected = False
         self._screen_sync_pending = False
         self._current_dpr = 1.0
+        self.settings_dialog: SettingsDialog | None = None
         self.setObjectName("naviPanel")
         self.setWindowTitle(config.app_name)
         self.setWindowIcon(app_icon())
@@ -189,6 +191,7 @@ class NaviPanel(QWidget):
         surface_layout.setContentsMargins(0, 0, 0, 0)
         surface_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
+        self.title_bar.settings_button.clicked.connect(self._open_settings)
         surface_layout.addWidget(self.title_bar)
         self.history = HistorySidebar(self)
         self.history.hide()
@@ -402,7 +405,7 @@ class NaviPanel(QWidget):
         self._busy_chats.add(chat_id)
         self._pending_send_chat_id = chat_id
         self.history.status.setText("正在发送消息…")
-        self.api.send_message(chat_id, message)
+        self.api.agent.send_message(chat_id, message)
         self.message_submitted.emit(message)
 
     def add_assistant_message(self, message: str) -> None:
@@ -410,17 +413,28 @@ class NaviPanel(QWidget):
 
     def attach_api(self, api: NaviApi) -> None:
         self.api = api
-        api.chats_loaded.connect(self._on_chats_loaded)
-        api.messages_loaded.connect(self._on_messages_loaded)
-        api.chat_created.connect(self._on_chat_created)
-        api.chat_renamed.connect(self._on_chat_renamed)
-        api.chat_deleted.connect(self._on_chat_deleted)
-        api.message_accepted.connect(self._on_message_accepted)
-        api.stream_started.connect(self._on_stream_started)
-        api.stream_delta.connect(self._on_stream_delta)
-        api.stream_completed.connect(self._on_stream_completed)
-        api.stream_failed.connect(self._on_stream_failed)
-        api.request_failed.connect(self._on_request_failed)
+        api.chat_items.chats_loaded.connect(self._on_chats_loaded)
+        api.chat_content.messages_loaded.connect(self._on_messages_loaded)
+        api.chat_items.chat_created.connect(self._on_chat_created)
+        api.chat_items.chat_renamed.connect(self._on_chat_renamed)
+        api.chat_items.chat_deleted.connect(self._on_chat_deleted)
+        api.agent.message_accepted.connect(self._on_message_accepted)
+        api.agent.stream_started.connect(self._on_stream_started)
+        api.agent.stream_delta.connect(self._on_stream_delta)
+        api.agent.stream_completed.connect(self._on_stream_completed)
+        api.agent.stream_failed.connect(self._on_stream_failed)
+        api.transport.request_failed.connect(self._on_request_failed)
+
+    def _open_settings(self) -> None:
+        """打开模型配置窗口，并在每次展示时刷新后端数据。"""
+        if self.api is None:
+            return
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.api, self)
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+        self.settings_dialog.refresh()
 
     def refresh_items(self) -> None:
         if self.api is None:
@@ -429,7 +443,7 @@ class NaviPanel(QWidget):
         self._chat_loading = True
         self.history.set_paging(self._chat_has_more, True)
         self.history.status.setText("正在加载对话…")
-        self.api.get_chats()
+        self.api.chat_items.get_chat_items()
 
     def load_more_chats(self) -> None:
         if (
@@ -442,7 +456,7 @@ class NaviPanel(QWidget):
             return
         self._chat_loading = True
         self.history.set_paging(True, True)
-        self.api.get_chats(before)
+        self.api.chat_items.get_chat_items(before)
 
     def _on_chats_loaded(self, records: list[dict], has_more: bool, is_more: bool) -> None:
         self._chat_loading = False
@@ -462,7 +476,7 @@ class NaviPanel(QWidget):
             self.history.status.setText("尚未连接 Agent")
             return
         self.history.status.setText("正在创建对话…")
-        self.api.create_chat()
+        self.api.chat_items.create_chat_item()
 
     def _on_chat_created(self, record: dict) -> None:
         self._records.insert(0, record)
@@ -493,7 +507,7 @@ class NaviPanel(QWidget):
         self.chat.focus_input()
         if self.api is not None:
             self.history.status.setText("正在加载内容…")
-            self.api.get_messages(chat_id)
+            self.api.chat_content.get_chat_content(chat_id)
 
     def load_more_content(self) -> None:
         if (
@@ -509,7 +523,7 @@ class NaviPanel(QWidget):
             return
         self._message_loading = True
         self.chat.set_history_paging(True, True)
-        self.api.get_messages(self._active_chat_id, before)
+        self.api.chat_content.get_chat_content(self._active_chat_id, before)
 
     def _on_messages_loaded(
         self, chat_id: str, messages: list[dict], has_more: bool, is_older: bool
@@ -541,7 +555,7 @@ class NaviPanel(QWidget):
         name, accepted = QInputDialog.getText(self, "重命名对话", "对话名称：", text=record["name"])
         name = name.strip()
         if accepted and name and name != record["name"]:
-            self.api.rename_chat(chat_id, name)
+            self.api.chat_items.rename_chat_item(chat_id, name)
 
     def _on_chat_renamed(self, updated: dict) -> None:
         for record in self._records:
@@ -559,7 +573,7 @@ class NaviPanel(QWidget):
             QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.api.delete_chat(chat_id)
+            self.api.chat_items.delete_chat_item(chat_id)
 
     def _on_chat_deleted(self, chat_id: str) -> None:
         self._records = [item for item in self._records if item["id"] != chat_id]
